@@ -26,6 +26,10 @@ class PWorker implements robbmj\ParentWorker {
 
 $c = new CWorker();
 $p = new PWorker();
-$ipc = new robbmj\IPC($p, $c);
+$ipc = (new robbmj\IPC($p, $c))
+		->parentWaitTime(0)
+		->childWaitTime(1);
+
 $ipc->start();
+
 var_dump(strlen($p->getContent()));

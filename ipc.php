@@ -4,16 +4,36 @@ interface ChildWorker {
 	function produce();
 }
 
-
 interface ParentWorker {
 	function consume($input);
 }
 
+class IPCException extends \Exception { }
+
 class IPC {
-	private $p, $c;
+	private $p, $c, $parentWaitTime, $childWaitTime;
+	
 	function __construct(ParentWorker $p, ChildWorker $c) {
 		$this->p = $p;
 		$this->c = $c;
+		$this->parentWaitTime = 10;
+		$this->childWaitTime = 10;
+	}
+
+	public function parentWaitTime($seconds) {
+		if (!is_int($seconds) || $seconds < 1) {
+			throw new \InvalidArgumentException("seconds must be greater than or equal to 1");
+		}
+		$this->parentWaitTime = $seconds;
+		return $this;
+	}
+
+	public function childWaitTime($seconds) {
+		if (!is_int($seconds) || $seconds < 1) {
+			throw new \InvalidArgumentException("seconds must be greater than or equal to 1");
+		}
+		$this->childWaitTime = $seconds;
+		return $this;
 	}
 
 	function start() {
@@ -21,10 +41,11 @@ class IPC {
 		$pid = pcntl_fork();
     	if ($pid === 0) {
     		try {
+    			register_shutdown_function(array($this, 'childShutdownHandler'));
     			$this->childProcess($server_sock);	
     			exit(0);
     		}
-    		catch (Exception $e) {
+    		catch (IPCException $e) {
     			exit(1);
     		}
     	}
@@ -33,7 +54,7 @@ class IPC {
     			$this->parentProcess($server_sock);
     			return true;
     		}
-    		catch (Exception $e) {
+    		catch (IPCException $e) {
     			return false;
     		}
     	}
@@ -42,50 +63,85 @@ class IPC {
     	}
 	}
 
+	protected function childShutdownHandler() {
+		$e = error_get_last();
+  		if ($e !== NULL) {
+		    echo "Error of type: {$e['type']} msg: {$e['message']} in {$e['file']} on line {$e['line']}\n";
+  		}
+	}
+
 	protected function childProcess($server_sock) {
+
 		$produced = $this->c->produce();
 		if (($client = socket_create(AF_UNIX, SOCK_STREAM, 0)) == false) {
-            throw new Exception("failed to create socket: " . socket_strerror($client)); 
-            
+            throw new IPCException("failed to create socket: " . socket_strerror($client)); 
+        }
+
+        $now = time();
+
+        while (true) {
+            if (($ret = socket_connect($client, $server_sock)) == false) {
+            	if ($now + $this->childWaitTime < time()) {
+                	throw new IPCException("Child process waited to long for connection from parent. Max wait time: {$this->childWaitTime}");
+                }
+                usleep(200000);
+             }
+             else {
+                break;
+             }
         }
    
-        if (($ret = socket_connect($client, $server_sock)) != false) {
-            $produced = ($produced) ? trim($produced) : '';
+        $produced = ($produced) ? trim($produced) : '';
 
-            var_dump(strlen($produced));
-            while ((strlen($produced) > 0) && ($wrote = socket_write($client, $produced))) {
-                $produced = substr($produced, $wrote);
-            }
-
-            socket_close($client);
-            exit(0);
+        while ((strlen($produced) > 0) && ($wrote = socket_write($client, $produced))) {
+            $produced = substr($produced, $wrote);
         }
-        else {
-            echo "failed to connect socket: " . socket_strerror($ret) . "\n"; 
-            socket_close($client);
-            exit(1);
-        }
+        socket_close($client);
 	}
 
 	protected function parentProcess($server_sock) {
+
 		if (($server = socket_create(AF_UNIX, SOCK_STREAM, 0)) == false) {
-            throw new Exception("failed to create socket: " . socket_strerror($server));
+            throw new IPCException("failed to create socket: " . socket_strerror($server));
         }
 
         if (($ret = socket_bind($server, $server_sock)) == false) {
         	unlink($server_sock);
        		socket_close($server);
-            throw new Exception("failed to bind socket: " . socket_strerror($ret));
+            throw new IPCException("failed to bind socket: " . socket_strerror($ret));
         }
 
-        socket_listen($server);
+        if (!socket_listen($server)) {
+        	unlink($server_sock);
+       		socket_close($server);
+        	throw new IPCException("Failed to start socket listening on port: " . socket_strerror($ret));
+        }
 
-        if (($client = socket_accept($server)) !== false) {
-        	$content = '';
-            while ($line = socket_read($client, 4098)) {
-                $content .= $line;
+        if (!socket_set_nonblock($server)) {
+        	unlink($server_sock);
+       		socket_close($server);
+        	throw new IPCException("Failed to set socket to non block: " . socket_strerror($ret));
+        }
+
+        $now = time();
+
+		while (true) {    
+            if (($client = socket_accept($server)) !== false) {
+            	$content = '';
+                echo "Client $client has connected\n";
+                while ($line = socket_read($client, 4098)) {
+                    $content .= $line;
+                }
+                socket_close($client);
+                break;
             }
-            socket_close($client);
+            else {
+                if ($now + $this->parentWaitTime < time()) {
+                    echo "Waited to long for client\n";
+                    break;
+                }
+                usleep(200000);
+            }
         }
 
         unlink($server_sock);
