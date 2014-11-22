@@ -15,21 +15,24 @@ class CWorker implements robbmj\ChildWorker {
 }
 
 class PWorker implements robbmj\ParentWorker {
-	private $content;
+	private $content = array();
 	public function consume($input) {
-		$this->content = $input;
+		$this->content[] = $input;
 	}
 	public function getContent() {
-		return $this->content;
+		foreach ($this->content as $value) {
+			$r[] = strlen($value);
+		}
+		return $r;
 	}
 }
 
-$c = new CWorker();
+$cWorkers = [new CWorker(), new CWorker()];
 $p = new PWorker();
-$ipc = (new robbmj\IPC($p, $c))
-		->parentWaitTime(0)
-		->childWaitTime(1);
+$ipc = (new robbmj\IPC($p, $cWorkers))
+		->parentWaitTime(5)
+		->childWaitTime(5);
 
 $ipc->start();
 
-var_dump(strlen($p->getContent()));
+var_dump($p->getContent());

@@ -1,6 +1,33 @@
 <?php namespace robbmj;
 
+/**
+ * The MIT License (MIT)
+ * 
+ * Copyright (c) 2014 Michael John Robb
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
 interface ChildWorker {
+	/**
+	 * produce must return a string
+	 */
 	function produce();
 }
 
@@ -11,11 +38,11 @@ interface ParentWorker {
 class IPCException extends \Exception { }
 
 class IPC {
-	private $p, $c, $parentWaitTime, $childWaitTime;
+	private $pWorker, $cWorkers, $parentWaitTime, $childWaitTime;
 	
-	function __construct(ParentWorker $p, ChildWorker $c) {
-		$this->p = $p;
-		$this->c = $c;
+	function __construct(ParentWorker $pWorker, array /* ChildWorker */ $cWorkers) {
+		$this->pWorker = $pWorker;
+		$this->cWorkers = $cWorkers;
 		$this->parentWaitTime = 10;
 		$this->childWaitTime = 10;
 	}
@@ -37,30 +64,29 @@ class IPC {
 	}
 
 	function start() {
-		$server_sock = dirname(__FILE__) . "/server.sock";
-		$pid = pcntl_fork();
-    	if ($pid === 0) {
-    		try {
-    			register_shutdown_function(array($this, 'childShutdownHandler'));
-    			$this->childProcess($server_sock);	
-    			exit(0);
-    		}
-    		catch (IPCException $e) {
-    			exit(1);
-    		}
-    	}
-    	else if ($pid > 0) {
-    		try {
-    			$this->parentProcess($server_sock);
-    			return true;
-    		}
-    		catch (IPCException $e) {
-    			return false;
-    		}
-    	}
-    	else {
-    		return false;
-    	}
+		foreach ($this->cWorkers as $i => $cWorker) {
+			$pid = pcntl_fork();
+	    	if ($pid === 0) {
+	    		try {
+	    			register_shutdown_function(array($this, 'childShutdownHandler'));
+	    			$this->childProcess($cWorker);	
+	    			exit(0);
+	    		}
+	    		catch (IPCException $e) {
+	    			exit(1);
+	    		}
+	    	}
+	    	else if ($pid > 0) {
+	    		try {
+	    			$this->parentProcess($pid);
+	    		}
+	    		catch (IPCException $e) {
+	    		}
+	    	}
+	    	else {
+	    		return false;
+	    	}
+	    }
 	}
 
 	protected function childShutdownHandler() {
@@ -70,9 +96,9 @@ class IPC {
   		}
 	}
 
-	protected function childProcess($server_sock) {
-
-		$produced = $this->c->produce();
+	protected function childProcess(ChildWorker $c) {
+		$server_sock = dirname(__FILE__) . '/server-' . getmypid() . '.sock';
+		$produced = $c->produce();
 		if (($client = socket_create(AF_UNIX, SOCK_STREAM, 0)) == false) {
             throw new IPCException("failed to create socket: " . socket_strerror($client)); 
         }
@@ -99,8 +125,9 @@ class IPC {
         socket_close($client);
 	}
 
-	protected function parentProcess($server_sock) {
-
+	protected function parentProcess($pid) {
+		$server_sock = dirname(__FILE__) . '/server-' . $pid . '.sock';
+		
 		if (($server = socket_create(AF_UNIX, SOCK_STREAM, 0)) == false) {
             throw new IPCException("failed to create socket: " . socket_strerror($server));
         }
@@ -148,7 +175,7 @@ class IPC {
         socket_close($server);
         
         if (isset($content)) {
-        	$this->p->consume($content);
+        	$this->pWorker->consume($content);
     	}
 	}
 }
