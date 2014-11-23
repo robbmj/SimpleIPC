@@ -2,8 +2,9 @@
 
 require_once 'ipc.php';
 
-class CWorker implements robbmj\ChildWorker {
+class CurlWorker implements robbmj\ChildWorker {
 	public function produce() {
+		sleep(2);
 		$ch = curl_init('https://www.google.ca/');
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
@@ -27,12 +28,12 @@ class PWorker implements robbmj\ParentWorker {
 	}
 }
 
-$cWorkers = [new CWorker(), new CWorker()];
+$cWorkers = [new CurlWorker(), new CurlWorker()];
 $p = new PWorker();
 $ipc = (new robbmj\IPC($p, $cWorkers))
-		->parentWaitTime(5)
-		->childWaitTime(5);
-
+		->maxWaitTime(0)
+		->maxChildren(1);
+		
 $ipc->start();
 
 var_dump($p->getContent());

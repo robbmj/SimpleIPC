@@ -32,150 +32,169 @@ interface ChildWorker {
 }
 
 interface ParentWorker {
+	/**
+	 * $input will always be a string
+	 */
 	function consume($input);
 }
 
-class IPCException extends \Exception { }
+class SocketPair {
+	private $clientSock, $serverSock, $createTime;
+
+	function __construct($clientSock, $serverSock, $createTime = null) {
+		$this->clientSock = $clientSock;
+		$this->serverSock = $serverSock;
+		$this->createTime = isset($createTime) ? $createTime : time();
+	}
+
+	function passedAllotedTime($allotedTime) {
+		return $this->createTime + $allotedTime <= time();
+	}
+
+    function clientSock() {
+    	return $this->clientSock;
+    }
+
+    function serverSock() {
+    	return $this->serverSock;
+    }
+
+    function closeClient() {
+    	socket_close($this->clientSock);
+    }
+
+    function closeServer() {
+    	socket_close($this->serverSock);
+    }
+}
 
 class IPC {
-	private $pWorker, $cWorkers, $parentWaitTime, $childWaitTime;
+	private $pWorker, $cWorkers, $maxChildren, $maxWaitTime;
 	
 	function __construct(ParentWorker $pWorker, array /* ChildWorker */ $cWorkers) {
 		$this->pWorker = $pWorker;
 		$this->cWorkers = $cWorkers;
-		$this->parentWaitTime = 10;
-		$this->childWaitTime = 10;
+		$this->maxChildren = 0;
+		$this->maxWaitTime = 0;
 	}
 
-	public function parentWaitTime($seconds) {
-		if (!is_int($seconds) || $seconds < 1) {
-			throw new \InvalidArgumentException("seconds must be greater than or equal to 1");
+    /**
+	 * Sets the maximum number of Child Processes that can be running at any one time.
+	 * If set to 0, There is no limit. 
+	 *
+	 * If $max is not a integer of is less than 0 an InvalidArgumentException is thrown  
+	 */
+	public function maxChildren($max) {
+		if (!is_int($max) || $max < 0) {
+			throw new \InvalidArgumentException("seconds must be greater than or equal to 0");
 		}
-		$this->parentWaitTime = $seconds;
+		$this->maxChildren = $max;
 		return $this;
 	}
 
-	public function childWaitTime($seconds) {
-		if (!is_int($seconds) || $seconds < 1) {
-			throw new \InvalidArgumentException("seconds must be greater than or equal to 1");
+    /**
+	 * Sets the maximum amount of time a child process can run for before the process is terminated.
+	 * If set to 0, There is no limit. 
+	 *
+	 * If $seconds is not a integer of is less than 0 an InvalidArgumentException is thrown  
+	 */
+	public function maxWaitTime($seconds) {
+		if (!is_int($seconds) || $seconds < 0) {
+			throw new \InvalidArgumentException("seconds must be greater than or equal to 0");
 		}
-		$this->childWaitTime = $seconds;
+		$this->maxWaitTime = $seconds;
 		return $this;
 	}
 
+    /**
+     * For each instance of ChildWorker a process will be started and ChildWorker::produce will be called,
+     * the return value will be passed to ParentWorker::consume() in the parent process.
+     */ 
 	function start() {
+		$pids = array();
+		$sockets = array();
+		
 		foreach ($this->cWorkers as $i => $cWorker) {
+			
+			$socketPair = $this->makeSocketPair();			
+			if (!$socketPair) {
+                continue;
+            }
+
 			$pid = pcntl_fork();
 	    	if ($pid === 0) {
-	    		try {
-	    			register_shutdown_function(array($this, 'childShutdownHandler'));
-	    			$this->childProcess($cWorker);	
-	    			exit(0);
-	    		}
-	    		catch (IPCException $e) {
-	    			exit(1);
-	    		}
+	    		$this->childProcess($socketPair, $cWorker);
+		        exit(0);
 	    	}
 	    	else if ($pid > 0) {
-	    		try {
-	    			$this->parentProcess($pid);
+	    		$sockets[$pid] = $socketPair;
+	    		if ($this->maxChildren > 0 && (count($sockets) >= $this->maxChildren)) {
+	    			$this->reduceProcessCount($sockets, $this->maxChildren - 1);
 	    		}
-	    		catch (IPCException $e) {
-	    		}
-	    	}
-	    	else {
-	    		return false;
 	    	}
 	    }
+	    $this->reduceProcessCount($sockets, 0);
 	}
 
-	protected function childShutdownHandler() {
-		$e = error_get_last();
-  		if ($e !== NULL) {
-		    echo "Error of type: {$e['type']} msg: {$e['message']} in {$e['file']} on line {$e['line']}\n";
-  		}
+	protected function makeSocketPair() {
+		$pair = array();
+		if (socket_create_pair(AF_UNIX, SOCK_STREAM, 0, $pair) === false) {
+			// TODO: install a logger, echoing is not cool
+            echo "socket_create_pair failed. Reason: " . socket_strerror(socket_last_error());
+            return null;
+        }
+        return new SocketPair($pair[0], $pair[1]);
 	}
 
-	protected function childProcess(ChildWorker $c) {
-		$server_sock = dirname(__FILE__) . '/server-' . getmypid() . '.sock';
-		$produced = $c->produce();
-		if (($client = socket_create(AF_UNIX, SOCK_STREAM, 0)) == false) {
-            throw new IPCException("failed to create socket: " . socket_strerror($client)); 
-        }
-
-        $now = time();
-
-        while (true) {
-            if (($ret = socket_connect($client, $server_sock)) == false) {
-            	if ($now + $this->childWaitTime < time()) {
-                	throw new IPCException("Child process waited to long for connection from parent. Max wait time: {$this->childWaitTime}");
-                }
-                usleep(200000);
-             }
-             else {
-                break;
-             }
-        }
-   
-        $produced = ($produced) ? trim($produced) : '';
-
-        while ((strlen($produced) > 0) && ($wrote = socket_write($client, $produced))) {
-            $produced = substr($produced, $wrote);
-        }
-        socket_close($client);
-	}
-
-	protected function parentProcess($pid) {
-		$server_sock = dirname(__FILE__) . '/server-' . $pid . '.sock';
-		
-		if (($server = socket_create(AF_UNIX, SOCK_STREAM, 0)) == false) {
-            throw new IPCException("failed to create socket: " . socket_strerror($server));
-        }
-
-        if (($ret = socket_bind($server, $server_sock)) == false) {
-        	unlink($server_sock);
-       		socket_close($server);
-            throw new IPCException("failed to bind socket: " . socket_strerror($ret));
-        }
-
-        if (!socket_listen($server)) {
-        	unlink($server_sock);
-       		socket_close($server);
-        	throw new IPCException("Failed to start socket listening on port: " . socket_strerror($ret));
-        }
-
-        if (!socket_set_nonblock($server)) {
-        	unlink($server_sock);
-       		socket_close($server);
-        	throw new IPCException("Failed to set socket to non block: " . socket_strerror($ret));
-        }
-
-        $now = time();
-
-		while (true) {    
-            if (($client = socket_accept($server)) !== false) {
-            	$content = '';
-                echo "Client $client has connected\n";
-                while ($line = socket_read($client, 4098)) {
-                    $content .= $line;
-                }
-                socket_close($client);
-                break;
-            }
-            else {
-                if ($now + $this->parentWaitTime < time()) {
-                    echo "Waited to long for client\n";
-                    break;
-                }
-                usleep(200000);
-            }
-        }
-
-        unlink($server_sock);
-        socket_close($server);
-        
-        if (isset($content)) {
-        	$this->pWorker->consume($content);
+	protected function childProcess(SocketPair $socketPair, ChildWorker $cWorker) {
+		$socketPair->closeClient();
+		$output = $cWorker->produce();
+   		socket_set_nonblock($socketPair->serverSock());
+        $output = ($output) ? trim($output) : '';
+        while ((strlen($output) > 0) && ($wrote = socket_write($socketPair->serverSock(), $output))) {
+            $output = substr($output, $wrote);
     	}
+        $socketPair->closeServer();
+	}
+
+	protected function parentProcess(SocketPair $socketPair) {
+		$socketPair->closeServer();
+		$content = '';
+		while ($line = socket_read($socketPair->clientSock(), 1129)) {
+			$len = strlen($content);
+            $content .= $line;
+        }
+        $socketPair->closeClient();
+        $this->pWorker->consume($content);
+	}
+
+	protected function reduceProcessCount(array &$sockets, $to) {
+		while (count($sockets) > $to) {
+    		$pid = pcntl_wait($status, WNOHANG);
+    		if ($pid > 0) {
+    			$this->parentProcess($sockets[$pid]);
+        		unset($sockets[$pid]);	
+    		}
+        	else {
+        		$this->killExpiredProcesses($sockets);
+        		var_dump(count($sockets));
+        		usleep(200000);
+        	}
+    	}
+	}
+
+	protected function killExpiredProcesses(array &$sockets) {
+		if ($this->maxWaitTime) {
+			foreach ($sockets as $pid => $pair) {
+				if ($pair->passedAllotedTime($this->maxWaitTime)) {
+					$pair->closeServer();
+					$pair->closeClient();
+					unset($sockets[$pid]);
+					// TODO: install a logger, echoing is not cool
+					echo "PID: $pid took to long\n";
+					posix_kill($pid, SIGINT);
+				}	
+			}
+		}
 	}
 }
