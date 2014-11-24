@@ -49,7 +49,7 @@ namespace robbmj\ipc {
 			$this->maxWaitTime = 0;
 		}
 
-	    /**
+		/**
 		 * Sets the maximum number of Child Processes that can be running at any one time.
 		 * If set to 0, There is no limit. 
 		 *
@@ -63,7 +63,7 @@ namespace robbmj\ipc {
 			return $this;
 		}
 
-	    /**
+		/**
 		 * Sets the maximum amount of time a child process can run for before the process is terminated.
 		 * If set to 0, There is no limit. 
 		 *
@@ -77,10 +77,10 @@ namespace robbmj\ipc {
 			return $this;
 		}
 
-	    /**
-	     * For each instance of ChildWorker a process will be started and ChildWorker::produce will be called,
-	     * the return value will be passed to ParentWorker::consume() in the parent process.
-	     */ 
+		/**
+		 * For each instance of ChildWorker a process will be started and ChildWorker::produce will be called,
+		 * the return value will be passed to ParentWorker::consume() in the parent process.
+		 */ 
 		function start() {
 			$pids = array();
 			$sockets = array();
@@ -89,52 +89,52 @@ namespace robbmj\ipc {
 				
 				$socketPair = sp\SocketPair::create();
 				if (!$socketPair) {
-	                continue;
-	            }
+					continue;
+				}
 
 				$pid = pcntl_fork();
-		    	if ($pid === 0) {
-		    		$this->childProcess($socketPair, $cWorker);
-			        exit(0);
-		    	}
-		    	else if ($pid > 0) {
-		    		$sockets[$pid] = $socketPair;
-		    		if ($this->maxChildren > 0 && (count($sockets) >= $this->maxChildren)) {
-		    			$this->reduceProcessCount($sockets, $this->maxChildren - 1);
-		    		}
-		    	}
-		    }
-		    $this->reduceProcessCount($sockets, 0);
+				if ($pid === 0) {
+					$this->childProcess($socketPair, $cWorker);
+					exit(0);
+				}
+				else if ($pid > 0) {
+					$sockets[$pid] = $socketPair;
+					if ($this->maxChildren > 0 && (count($sockets) >= $this->maxChildren)) {
+						$this->reduceProcessCount($sockets, $this->maxChildren - 1);
+					}
+				}
+			}
+			$this->reduceProcessCount($sockets, 0);
 		}
 
 		protected function childProcess(sp\SocketPair $socketPair, ChildWorker $cWorker) {
 			$output = $cWorker->produce();
 			$socketPair->closeClient();
-	   		socket_set_nonblock($socketPair->serverSock());
-	        $socketPair->write($output);
-	        $socketPair->closeServer();
+			socket_set_nonblock($socketPair->serverSock());
+			$socketPair->write($output);
+			$socketPair->closeServer();
 		}
 
 		protected function parentProcess(sp\SocketPair $socketPair) {
 			$socketPair->closeServer();
-	        $content = $socketPair->read();
-	        $socketPair->closeClient();
-	        $this->pWorker->consume($content);
+			$content = $socketPair->read();
+			$socketPair->closeClient();
+			$this->pWorker->consume($content);
 		}
 
 		protected function reduceProcessCount(array &$sockets, $to) {
 			while (count($sockets) > $to) {
-	    		$pid = pcntl_wait($status, WNOHANG);
-	    		if ($pid > 0) {
-	    			$this->parentProcess($sockets[$pid]);
-	        		unset($sockets[$pid]);	
-	    		}
-	        	else {
-	        		$this->killExpiredProcesses($sockets);
-	        		var_dump(count($sockets));
-	        		usleep(200000);
-	        	}
-	    	}
+				$pid = pcntl_wait($status, WNOHANG);
+				if ($pid > 0) {
+					$this->parentProcess($sockets[$pid]);
+					unset($sockets[$pid]);	
+				}
+				else {
+					$this->killExpiredProcesses($sockets);
+					var_dump(count($sockets));
+					usleep(200000);
+				}
+			}
 		}
 
 		protected function killExpiredProcesses(array &$sockets) {
@@ -168,48 +168,48 @@ namespace robbmj\ipc\sp {
 			$pair = array();
 			if (socket_create_pair(AF_UNIX, SOCK_STREAM, 0, $pair) === false) {
 				// TODO: install a logger, echoing is not cool
-	            echo "socket_create_pair failed. Reason: " . socket_strerror(socket_last_error());
-	            return null;
-	        }
-	        return new SocketPair($pair[0], $pair[1]);
+				echo "socket_create_pair failed. Reason: " . socket_strerror(socket_last_error());
+				return null;
+			}
+			return new SocketPair($pair[0], $pair[1]);
 		}
 
 		function passedAllotedTime($allotedTime) {
 			return ($this->createTime + $allotedTime) <= time();
 		}
 
-	    function clientSock() {
-	    	return $this->clientSock;
-	    }
+		function clientSock() {
+			return $this->clientSock;
+		}
 
-	    function serverSock() {
-	    	return $this->serverSock;
-	    }
+		function serverSock() {
+			return $this->serverSock;
+		}
 
-	    function closeClient() {
-	    	socket_close($this->clientSock);
-	    }
+		function closeClient() {
+			socket_close($this->clientSock);
+		}
 
-	    function closeServer() {
-	    	socket_close($this->serverSock);
-	    }
+		function closeServer() {
+			socket_close($this->serverSock);
+		}
 
-	    function write($content) {
-	    	$written = 0;
-	    	while ((strlen($content) > 0) && ($wrote = socket_write($this->serverSock(), $content))) {
-	            $content = substr($content, $wrote);
-	            $written += $wrote;
-	    	}
-	    	return $written;
-	    }
+		function write($content) {
+			$written = 0;
+			while ((strlen($content) > 0) && ($wrote = socket_write($this->serverSock(), $content))) {
+				$content = substr($content, $wrote);
+				$written += $wrote;
+			}
+			return $written;
+		}
 
-	    function read() {
-	    	$content = '';
+		function read() {
+			$content = '';
 			while ($line = socket_read($this->clientSock(), 1129)) {
 				$len = strlen($content);
-	            $content .= $line;
-	        }
-	        return $content;
-	    }
+				$content .= $line;
+			}
+			return $content;
+		}
 	}
 }
