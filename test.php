@@ -2,10 +2,13 @@
 
 require_once 'ipc.php';
 
-class CurlWorker implements robbmj\ChildWorker {
+class CurlWorker implements robbmj\ipc\ChildWorker {
+	private $url;
+	public function __construct($url) {
+		$this->url = $url;
+	}
 	public function produce() {
-		sleep(2);
-		$ch = curl_init('https://www.google.ca/');
+		$ch = curl_init($this->url);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
@@ -15,7 +18,7 @@ class CurlWorker implements robbmj\ChildWorker {
 	}
 }
 
-class PWorker implements robbmj\ParentWorker {
+class PWorker implements robbmj\ipc\ParentWorker {
 	private $content = array();
 	public function consume($input) {
 		$this->content[] = $input;
@@ -28,12 +31,12 @@ class PWorker implements robbmj\ParentWorker {
 	}
 }
 
-$cWorkers = [new CurlWorker(), new CurlWorker()];
+$cWorkers = [new CurlWorker('https://www.google.ca/'), new CurlWorker('http://php.net/')];
 $p = new PWorker();
-$ipc = (new robbmj\IPC($p, $cWorkers))
-		->maxWaitTime(0)
-		->maxChildren(1);
-		
+$ipc = (new robbmj\ipc\IPC($p, $cWorkers))
+		->maxWaitTime(10)
+		->maxChildren(10);
+
 $ipc->start();
 
 var_dump($p->getContent());
