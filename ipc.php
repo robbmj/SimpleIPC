@@ -131,7 +131,6 @@ namespace robbmj\ipc {
 				}
 				else {
 					$this->killExpiredProcesses($sockets);
-					var_dump(count($sockets));
 					usleep(200000);
 				}
 			}
@@ -144,8 +143,6 @@ namespace robbmj\ipc {
 						$pair->closeServer();
 						$pair->closeClient();
 						unset($sockets[$pid]);
-						// TODO: install a logger, echoing is not cool
-						echo "PID: $pid took to long\n";
 						posix_kill($pid, SIGINT);
 					}	
 				}
